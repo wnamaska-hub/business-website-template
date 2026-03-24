@@ -42,7 +42,7 @@ export const DEFAULT_CONFIG: GlobeConfig = {
     globe: "#0d6e7e",
     land: "#00e5ff",
     node: "#00ffff",
-    arc: "#55ccff",
+    arc: "#00e5ff",
     atmosphere: "#00bcd4",
   },
 };
@@ -161,7 +161,6 @@ function createDepthFadeMaterial(
 // ---------------------------------------------------------------------------
 interface ArcState {
   line: THREE.Line;
-  glowLine: THREE.Line;
   headSprite: THREE.Sprite;
   points: THREE.Vector3[];
   /** Parameter that advances from 0 → points.length + beamLen */
@@ -218,11 +217,10 @@ export class GlobeScene {
     this.renderer.toneMapping = THREE.NoToneMapping;
     this.container.appendChild(this.renderer.domElement);
 
-    // Scene & camera — offset so the globe sits right-of-centre behind the overlay
+    // Scene & camera — offset globe to the right so it doesn't dominate the text area
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
     this.camera.position.set(-0.6, 0.2, 5.2);
-    this.camera.lookAt(0, 0, 0);
 
     // Bloom
     const ts = TIER_SETTINGS[this.tier];
@@ -329,8 +327,7 @@ export class GlobeScene {
   private buildAtmosphere(): void {
     const { globeRadius, colors } = this.config;
     // FrontSide sphere — Fresnel is zero at centre, peaks at edges only.
-    // Radius barely exceeds the globe so the glow hugs the coastline edge.
-    const geo = new THREE.SphereGeometry(globeRadius * 1.008, 48, 48);
+    const geo = new THREE.SphereGeometry(globeRadius * 1.03, 48, 48);
     const mat = new THREE.ShaderMaterial({
       vertexShader: `
         varying vec3 vNormal;
@@ -347,7 +344,7 @@ export class GlobeScene {
         varying vec3 vPos;
         void main() {
           float rim = 1.0 - abs(dot(normalize(-vPos), vNormal));
-          float glow = pow(rim, 8.0) * 0.3;
+          float glow = pow(rim, 6.0) * 0.4;
           gl_FragColor = vec4(uColor, glow);
         }
       `,
@@ -388,38 +385,28 @@ export class GlobeScene {
     const beamLen = Math.max(4, Math.round(points.length * beamLength * variation));
 
     const geo = new THREE.BufferGeometry().setFromPoints(points);
-
-    // Primary beam — reduced opacity for softer look
-    const mat = createDepthFadeMaterial(colors.arc, 0.55, 0.08, { additive: true });
+    const mat = createDepthFadeMaterial(colors.arc, 0.9, 0.1, { additive: true });
     const line = new THREE.Line(geo, mat);
     line.geometry.setDrawRange(0, 0);
     line.visible = false;
     this.globeGroup.add(line);
-
-    // Glow pass — same geometry, lower opacity, bloom expands it into a soft halo
-    const glowMat = createDepthFadeMaterial(colors.arc, 0.2, 0.03, { additive: true });
-    const glowLine = new THREE.Line(geo, glowMat);
-    glowLine.geometry.setDrawRange(0, 0);
-    glowLine.visible = false;
-    this.globeGroup.add(glowLine);
 
     const headSprite = new THREE.Sprite(
       new THREE.SpriteMaterial({
         map: this.glowTexture,
         color: new THREE.Color(colors.arc),
         transparent: true,
-        opacity: 0.7,
+        opacity: 0.85,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       }),
     );
-    headSprite.scale.set(0.09, 0.09, 1);
+    headSprite.scale.set(0.08, 0.08, 1);
     headSprite.visible = false;
     this.globeGroup.add(headSprite);
 
     this.arcs.push({
       line,
-      glowLine,
       headSprite,
       points,
       t: 0,
@@ -441,7 +428,6 @@ export class GlobeScene {
       }
 
       arc.line.visible = true;
-      arc.glowLine.visible = true;
       arc.t += arc.speed;
 
       const head = Math.min(Math.floor(arc.t), arc.points.length);
@@ -460,7 +446,7 @@ export class GlobeScene {
         arc.headSprite.getWorldPosition(this._worldPos);
         const facing = this._worldPos.normalize().dot(camDir);
         const fade = THREE.MathUtils.smoothstep(facing, -0.2, 0.5);
-        (arc.headSprite.material as THREE.SpriteMaterial).opacity = 0.7 * fade;
+        (arc.headSprite.material as THREE.SpriteMaterial).opacity = 0.85 * fade;
       }
 
       if (tail >= arc.points.length) {
@@ -473,11 +459,9 @@ export class GlobeScene {
   private removeArc(index: number): void {
     const arc = this.arcs[index];
     this.globeGroup.remove(arc.line);
-    this.globeGroup.remove(arc.glowLine);
     this.globeGroup.remove(arc.headSprite);
     arc.line.geometry.dispose();
     (arc.line.material as THREE.Material).dispose();
-    (arc.glowLine.material as THREE.Material).dispose();
     (arc.headSprite.material as THREE.SpriteMaterial).dispose();
     this.arcs.splice(index, 1);
   }
@@ -524,7 +508,6 @@ export class GlobeScene {
     this.tier = detectTier();
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
-    this.camera.lookAt(0, 0, 0);
     this.renderer.setSize(width, height);
     this.composer.setSize(width, height);
   }
