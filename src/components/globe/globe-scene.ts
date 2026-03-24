@@ -6,13 +6,17 @@ import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { CONTINENT_OUTLINES, NODE_POSITIONS, type LatLon } from "./geo-data";
 
 // ---------------------------------------------------------------------------
-// Configuration — tweak these to customise the globe's appearance
+// Configuration — edit these defaults to customise the globe
 // ---------------------------------------------------------------------------
 export interface GlobeConfig {
   globeRadius: number;
   rotationSpeed: number;
+  /** Max cities shown (capped to NODE_POSITIONS length) */
   nodeCount: number;
+  /** Max simultaneous arcs (auto-reduced on smaller screens) */
   maxArcs: number;
+  /** Length of the traveling beam as a fraction of the arc (0–1) */
+  beamLength: number;
   bloomStrength: number;
   bloomRadius: number;
   bloomThreshold: number;
@@ -27,11 +31,12 @@ export interface GlobeConfig {
 
 export const DEFAULT_CONFIG: GlobeConfig = {
   globeRadius: 1.6,
-  rotationSpeed: 0.001,
+  rotationSpeed: 0.0008,
   nodeCount: 30,
   maxArcs: 8,
-  bloomStrength: 1.0,
-  bloomRadius: 0.5,
+  beamLength: 0.35,
+  bloomStrength: 0.9,
+  bloomRadius: 0.4,
   bloomThreshold: 0.05,
   colors: {
     globe: "#0e4d5c",
@@ -43,15 +48,28 @@ export const DEFAULT_CONFIG: GlobeConfig = {
 };
 
 // ---------------------------------------------------------------------------
+// Responsive tier — scales detail by viewport width
+// ---------------------------------------------------------------------------
+type Tier = "mobile" | "tablet" | "desktop";
+
+function detectTier(): Tier {
+  const w = window.innerWidth;
+  if (w < 768) return "mobile";
+  if (w < 1024) return "tablet";
+  return "desktop";
+}
+
+const TIER_SETTINGS: Record<Tier, { arcScale: number; nodeScale: number; bloomScale: number }> = {
+  mobile:  { arcScale: 0.38, nodeScale: 0.5,  bloomScale: 0.7 },
+  tablet:  { arcScale: 0.62, nodeScale: 0.7,  bloomScale: 0.85 },
+  desktop: { arcScale: 1,    nodeScale: 1,    bloomScale: 1 },
+};
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Convert latitude / longitude (degrees) to a Vector3 on a sphere. */
-function latLonToVec3(
-  lat: number,
-  lon: number,
-  radius: number,
-): THREE.Vector3 {
+function latLonToVec3(lat: number, lon: number, radius: number): THREE.Vector3 {
   const phi = (90 - lat) * (Math.PI / 180);
   const theta = (lon + 180) * (Math.PI / 180);
   return new THREE.Vector3(
@@ -61,55 +79,51 @@ function latLonToVec3(
   );
 }
 
-/** Create a curved arc between two points on the sphere surface. */
-function createArcCurve(
+/** Great-circle arc raised above the surface. */
+function buildArcPoints(
   start: THREE.Vector3,
   end: THREE.Vector3,
   radius: number,
   segments = 64,
 ): THREE.Vector3[] {
   const mid = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
-  // Raise the midpoint above the sphere for the arc effect
   const dist = start.distanceTo(end);
-  const altitude = radius + dist * 0.4;
-  mid.normalize().multiplyScalar(altitude);
-
-  const curve = new THREE.QuadraticBezierCurve3(start, mid, end);
-  return curve.getPoints(segments);
+  mid.normalize().multiplyScalar(radius + dist * 0.35);
+  return new THREE.QuadraticBezierCurve3(start, mid, end).getPoints(segments);
 }
 
-/** Generate a circular glow texture on a canvas. */
-function createGlowTexture(size = 64): THREE.Texture {
+function createGlowTexture(size = 64): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext("2d")!;
-  const half = size / 2;
-  const gradient = ctx.createRadialGradient(half, half, 0, half, half, half);
-  gradient.addColorStop(0, "rgba(255,255,255,1)");
-  gradient.addColorStop(0.3, "rgba(255,255,255,0.6)");
-  gradient.addColorStop(1, "rgba(255,255,255,0)");
-  ctx.fillStyle = gradient;
+  const h = size / 2;
+  const g = ctx.createRadialGradient(h, h, 0, h, h, h);
+  g.addColorStop(0, "rgba(255,255,255,1)");
+  g.addColorStop(0.25, "rgba(255,255,255,0.5)");
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g;
   ctx.fillRect(0, 0, size, size);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.needsUpdate = true;
-  return tex;
+  return new THREE.CanvasTexture(canvas);
 }
 
 // ---------------------------------------------------------------------------
-// Arc state
+// Arc state — each beam travelling between two nodes
 // ---------------------------------------------------------------------------
 interface ArcState {
-  mesh: THREE.Line;
-  totalPoints: number;
-  progress: number; // 0 → 1
+  line: THREE.Line;
+  headSprite: THREE.Sprite;
+  /** Pre-computed world positions along the curve */
+  points: THREE.Vector3[];
+  /** Parameter that advances from 0 → points.length + beamLen */
+  t: number;
+  /** How many points the visible beam window spans */
+  beamLen: number;
   speed: number;
-  phase: "growing" | "fading";
-  opacity: number;
 }
 
 // ---------------------------------------------------------------------------
-// GlobeScene — owns all Three.js resources
+// GlobeScene
 // ---------------------------------------------------------------------------
 export class GlobeScene {
   private renderer!: THREE.WebGLRenderer;
@@ -121,24 +135,22 @@ export class GlobeScene {
   private frameId = 0;
   private disposed = false;
   private resizeObserver: ResizeObserver | null = null;
-  private config: GlobeConfig;
-  private isMobile: boolean;
-  private reducedMotion: boolean;
+  private resizeTimer = 0;
 
-  constructor(
-    private container: HTMLElement,
-    config: Partial<GlobeConfig> = {},
-  ) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
-    this.isMobile = window.innerWidth < 768;
-    this.reducedMotion = window.matchMedia(
-      "(prefers-reduced-motion: reduce)",
-    ).matches;
+  private readonly config: GlobeConfig;
+  private tier: Tier;
+  private readonly reducedMotion: boolean;
+  private glowTexture!: THREE.CanvasTexture;
+
+  constructor(private container: HTMLElement, overrides: Partial<GlobeConfig> = {}) {
+    this.config = { ...DEFAULT_CONFIG, ...overrides };
+    this.tier = detectTier();
+    this.reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   }
 
-  /** Initialise and start the render loop. */
   init(): void {
     const { width, height } = this.container.getBoundingClientRect();
+    this.glowTexture = createGlowTexture();
 
     // Renderer
     this.renderer = new THREE.WebGLRenderer({
@@ -152,38 +164,40 @@ export class GlobeScene {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.container.appendChild(this.renderer.domElement);
 
-    // Scene
+    // Scene & camera
     this.scene = new THREE.Scene();
-
-    // Camera
     this.camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
     this.camera.position.z = 4.2;
 
-    // Post-processing (bloom)
+    // Bloom
+    const ts = TIER_SETTINGS[this.tier];
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    const bloom = new UnrealBloomPass(
-      new THREE.Vector2(width, height),
-      this.config.bloomStrength,
-      this.config.bloomRadius,
-      this.config.bloomThreshold,
+    this.composer.addPass(
+      new UnrealBloomPass(
+        new THREE.Vector2(width, height),
+        this.config.bloomStrength * ts.bloomScale,
+        this.config.bloomRadius,
+        this.config.bloomThreshold,
+      ),
     );
-    this.composer.addPass(bloom);
     this.composer.addPass(new OutputPass());
 
-    // Build scene
+    // Build scene elements
     this.scene.add(this.globeGroup);
-    this.buildWireframe();
+    this.buildGrid();
     this.buildContinents();
     this.buildNodes();
     this.buildAtmosphere();
-    this.seedArcs();
+    if (!this.reducedMotion) this.seedArcs();
 
-    // Responsive resize
-    this.resizeObserver = new ResizeObserver(() => this.handleResize());
+    // Observe resize (debounced)
+    this.resizeObserver = new ResizeObserver(() => {
+      clearTimeout(this.resizeTimer);
+      this.resizeTimer = window.setTimeout(() => this.handleResize(), 150);
+    });
     this.resizeObserver.observe(this.container);
 
-    // Start
     this.animate();
   }
 
@@ -191,154 +205,141 @@ export class GlobeScene {
   // Scene construction
   // -----------------------------------------------------------------------
 
-  /** Subtle latitude / longitude grid lines. */
-  private buildWireframe(): void {
+  private buildGrid(): void {
     const { globeRadius, colors } = this.config;
-    const material = new THREE.LineBasicMaterial({
+    const mat = new THREE.LineBasicMaterial({
       color: new THREE.Color(colors.globe),
       transparent: true,
-      opacity: 0.08,
+      opacity: 0.06,
     });
 
-    // Latitude rings
-    for (let lat = -60; lat <= 60; lat += 30) {
+    // Sparse latitude rings (equator + ±40°)
+    for (const lat of [-40, 0, 40]) {
       const pts: THREE.Vector3[] = [];
-      for (let lon = 0; lon <= 360; lon += 5) {
-        pts.push(latLonToVec3(lat, lon, globeRadius));
-      }
-      const geo = new THREE.BufferGeometry().setFromPoints(pts);
-      this.globeGroup.add(new THREE.Line(geo, material));
+      for (let lon = 0; lon <= 360; lon += 4) pts.push(latLonToVec3(lat, lon, globeRadius));
+      this.globeGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
     }
-    // Longitude meridians
-    for (let lon = 0; lon < 360; lon += 30) {
+    // Sparse meridians (every 60°)
+    for (let lon = 0; lon < 360; lon += 60) {
       const pts: THREE.Vector3[] = [];
-      for (let lat = -90; lat <= 90; lat += 5) {
-        pts.push(latLonToVec3(lat, lon, globeRadius));
-      }
-      const geo = new THREE.BufferGeometry().setFromPoints(pts);
-      this.globeGroup.add(new THREE.Line(geo, material));
+      for (let lat = -90; lat <= 90; lat += 4) pts.push(latLonToVec3(lat, lon, globeRadius));
+      this.globeGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
     }
   }
 
-  /** Continent outlines drawn as thin glowing lines. */
   private buildContinents(): void {
     const { globeRadius, colors } = this.config;
-    const material = new THREE.LineBasicMaterial({
+    const mat = new THREE.LineBasicMaterial({
       color: new THREE.Color(colors.land),
       transparent: true,
-      opacity: 0.55,
+      opacity: 0.5,
     });
 
     for (const outline of CONTINENT_OUTLINES) {
       const pts = outline.map(([lon, lat]: LatLon) =>
         latLonToVec3(lat, lon, globeRadius * 1.002),
       );
-      const geo = new THREE.BufferGeometry().setFromPoints(pts);
-      this.globeGroup.add(new THREE.Line(geo, material));
+      this.globeGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
     }
   }
 
-  /** Glowing node sprites at city positions. */
   private buildNodes(): void {
     const { globeRadius, colors, nodeCount } = this.config;
-    const glowTex = createGlowTexture();
-    const nodes = NODE_POSITIONS.slice(0, nodeCount);
+    const ts = TIER_SETTINGS[this.tier];
+    const count = Math.min(
+      Math.round(nodeCount * ts.nodeScale),
+      NODE_POSITIONS.length,
+    );
 
-    for (const [lat, lon] of nodes) {
+    const dotGeo = new THREE.SphereGeometry(0.012, 6, 6);
+    const dotMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(colors.node) });
+
+    for (let i = 0; i < count; i++) {
+      const [lat, lon] = NODE_POSITIONS[i];
       const pos = latLonToVec3(lat, lon, globeRadius * 1.01);
 
-      // Small core dot
-      const dotGeo = new THREE.SphereGeometry(0.012, 6, 6);
-      const dotMat = new THREE.MeshBasicMaterial({
-        color: new THREE.Color(colors.node),
-      });
       const dot = new THREE.Mesh(dotGeo, dotMat);
       dot.position.copy(pos);
       this.globeGroup.add(dot);
 
-      // Glow sprite
-      const spriteMat = new THREE.SpriteMaterial({
-        map: glowTex,
-        color: new THREE.Color(colors.node),
-        transparent: true,
-        opacity: 0.6,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      });
-      const sprite = new THREE.Sprite(spriteMat);
+      const sprite = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map: this.glowTexture,
+          color: new THREE.Color(colors.node),
+          transparent: true,
+          opacity: 0.5,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        }),
+      );
       sprite.position.copy(pos);
-      sprite.scale.set(0.09, 0.09, 1);
+      sprite.scale.set(0.08, 0.08, 1);
       this.globeGroup.add(sprite);
     }
   }
 
-  /** Fresnel-style atmosphere rim glow. */
   private buildAtmosphere(): void {
     const { globeRadius, colors } = this.config;
-    const atmosGeo = new THREE.SphereGeometry(globeRadius * 1.15, 48, 48);
-    const atmosMat = new THREE.ShaderMaterial({
+    const geo = new THREE.SphereGeometry(globeRadius * 1.15, 48, 48);
+    const mat = new THREE.ShaderMaterial({
       vertexShader: `
         varying vec3 vNormal;
-        varying vec3 vPosition;
+        varying vec3 vPos;
         void main() {
           vNormal = normalize(normalMatrix * normal);
-          vPosition = (modelViewMatrix * vec4(position, 1.0)).xyz;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          vPos = (modelViewMatrix * vec4(position, 1.0)).xyz;
+          gl_Position = projectionMatrix * vec4(vPos, 1.0);
         }
       `,
       fragmentShader: `
         uniform vec3 uColor;
         varying vec3 vNormal;
-        varying vec3 vPosition;
+        varying vec3 vPos;
         void main() {
-          vec3 viewDir = normalize(-vPosition);
-          float fresnel = 1.0 - dot(viewDir, vNormal);
-          fresnel = pow(fresnel, 3.5);
-          gl_FragColor = vec4(uColor, fresnel * 0.35);
+          float fresnel = pow(1.0 - dot(normalize(-vPos), vNormal), 3.5);
+          gl_FragColor = vec4(uColor, fresnel * 0.3);
         }
       `,
-      uniforms: {
-        uColor: { value: new THREE.Color(colors.atmosphere) },
-      },
+      uniforms: { uColor: { value: new THREE.Color(colors.atmosphere) } },
       transparent: true,
       blending: THREE.AdditiveBlending,
       side: THREE.BackSide,
       depthWrite: false,
     });
-    this.globeGroup.add(new THREE.Mesh(atmosGeo, atmosMat));
+    this.globeGroup.add(new THREE.Mesh(geo, mat));
   }
 
   // -----------------------------------------------------------------------
-  // Arc system
+  // Arc system — traveling energy beams
   // -----------------------------------------------------------------------
 
-  /** Populate initial set of arcs. */
   private seedArcs(): void {
-    const count = this.isMobile
-      ? Math.min(4, this.config.maxArcs)
-      : this.config.maxArcs;
-    for (let i = 0; i < count; i++) {
-      this.spawnArc();
-    }
+    const ts = TIER_SETTINGS[this.tier];
+    const count = Math.max(2, Math.round(this.config.maxArcs * ts.arcScale));
+    for (let i = 0; i < count; i++) this.spawnArc(Math.random()); // stagger initial beams
   }
 
-  /** Create a new random arc between two nodes. */
-  private spawnArc(): void {
-    const { globeRadius, colors, nodeCount } = this.config;
-    const nodes = NODE_POSITIONS.slice(0, nodeCount);
-    const a = Math.floor(Math.random() * nodes.length);
-    let b = Math.floor(Math.random() * nodes.length);
-    while (b === a) b = Math.floor(Math.random() * nodes.length);
+  /** Spawn an arc with an optional initial progress offset for staggering. */
+  private spawnArc(initialProgress = 0): void {
+    const { globeRadius, colors, nodeCount, beamLength } = this.config;
+    const ts = TIER_SETTINGS[this.tier];
+    const nodeLimit = Math.min(Math.round(nodeCount * ts.nodeScale), NODE_POSITIONS.length);
 
-    const start = latLonToVec3(nodes[a][0], nodes[a][1], globeRadius * 1.005);
-    const end = latLonToVec3(nodes[b][0], nodes[b][1], globeRadius * 1.005);
-    const curvePoints = createArcCurve(start, end, globeRadius);
+    const a = Math.floor(Math.random() * nodeLimit);
+    let b = Math.floor(Math.random() * nodeLimit);
+    while (b === a) b = Math.floor(Math.random() * nodeLimit);
 
-    const geo = new THREE.BufferGeometry().setFromPoints(curvePoints);
+    const start = latLonToVec3(NODE_POSITIONS[a][0], NODE_POSITIONS[a][1], globeRadius * 1.005);
+    const end = latLonToVec3(NODE_POSITIONS[b][0], NODE_POSITIONS[b][1], globeRadius * 1.005);
+    const points = buildArcPoints(start, end, globeRadius);
+    const beamLen = Math.max(4, Math.round(points.length * beamLength));
+
+    // Line
+    const geo = new THREE.BufferGeometry().setFromPoints(points);
     const mat = new THREE.LineBasicMaterial({
       color: new THREE.Color(colors.arc),
       transparent: true,
-      opacity: 0.9,
+      opacity: 0.85,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     });
@@ -346,45 +347,64 @@ export class GlobeScene {
     line.geometry.setDrawRange(0, 0);
     this.globeGroup.add(line);
 
+    // Bright sprite at beam head
+    const headSprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: this.glowTexture,
+        color: new THREE.Color(colors.arc),
+        transparent: true,
+        opacity: 0.9,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
+    );
+    headSprite.scale.set(0.06, 0.06, 1);
+    this.globeGroup.add(headSprite);
+
+    const totalTravel = points.length + beamLen;
     this.arcs.push({
-      mesh: line,
-      totalPoints: curvePoints.length,
-      progress: 0,
-      speed: 0.004 + Math.random() * 0.006,
-      phase: "growing",
-      opacity: 0.9,
+      line,
+      headSprite,
+      points,
+      t: Math.round(initialProgress * totalTravel),
+      beamLen,
+      speed: 0.4 + Math.random() * 0.5,
     });
   }
 
-  /** Advance arc animations and recycle completed arcs. */
   private updateArcs(): void {
     for (let i = this.arcs.length - 1; i >= 0; i--) {
       const arc = this.arcs[i];
+      arc.t += arc.speed;
 
-      if (arc.phase === "growing") {
-        arc.progress += arc.speed;
-        const drawCount = Math.floor(arc.progress * arc.totalPoints);
-        arc.mesh.geometry.setDrawRange(0, drawCount);
-        if (arc.progress >= 1) {
-          arc.phase = "fading";
-        }
-      } else {
-        // Fade out then remove
-        arc.opacity -= 0.012;
-        (arc.mesh.material as THREE.LineBasicMaterial).opacity = Math.max(
-          0,
-          arc.opacity,
-        );
-        if (arc.opacity <= 0) {
-          this.globeGroup.remove(arc.mesh);
-          arc.mesh.geometry.dispose();
-          (arc.mesh.material as THREE.Material).dispose();
-          this.arcs.splice(i, 1);
-          // Replace with a new arc
-          this.spawnArc();
-        }
+      const head = Math.min(Math.floor(arc.t), arc.points.length);
+      const tail = Math.max(0, Math.floor(arc.t) - arc.beamLen);
+      const drawStart = Math.min(tail, arc.points.length);
+      const drawCount = Math.max(0, head - drawStart);
+
+      arc.line.geometry.setDrawRange(drawStart, drawCount);
+
+      // Position head sprite at leading edge
+      const headIdx = Math.min(head, arc.points.length - 1);
+      arc.headSprite.position.copy(arc.points[headIdx]);
+      arc.headSprite.visible = head < arc.points.length;
+
+      // Arc finished — clean up and replace
+      if (tail >= arc.points.length) {
+        this.removeArc(i);
+        this.spawnArc();
       }
     }
+  }
+
+  private removeArc(index: number): void {
+    const arc = this.arcs[index];
+    this.globeGroup.remove(arc.line);
+    this.globeGroup.remove(arc.headSprite);
+    arc.line.geometry.dispose();
+    (arc.line.material as THREE.Material).dispose();
+    (arc.headSprite.material as THREE.SpriteMaterial).dispose();
+    this.arcs.splice(index, 1);
   }
 
   // -----------------------------------------------------------------------
@@ -395,46 +415,53 @@ export class GlobeScene {
     if (this.disposed) return;
     this.frameId = requestAnimationFrame(this.animate);
 
-    // Rotate globe (skip if user prefers reduced motion)
     if (!this.reducedMotion) {
       this.globeGroup.rotation.y += this.config.rotationSpeed;
+      this.updateArcs();
     }
-    this.updateArcs();
     this.composer.render();
   };
 
   // -----------------------------------------------------------------------
-  // Resize / cleanup
+  // Resize & cleanup
   // -----------------------------------------------------------------------
 
   private handleResize(): void {
+    if (this.disposed) return;
     const { width, height } = this.container.getBoundingClientRect();
     if (width === 0 || height === 0) return;
+
+    this.tier = detectTier();
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
     this.composer.setSize(width, height);
   }
 
-  /** Tear down all resources — call on unmount. */
   dispose(): void {
     this.disposed = true;
     cancelAnimationFrame(this.frameId);
+    clearTimeout(this.resizeTimer);
     this.resizeObserver?.disconnect();
+
+    // Remove all arcs explicitly (disposes their unique materials/geometries)
+    while (this.arcs.length) this.removeArc(0);
+
+    // Walk remaining scene graph
     this.scene.traverse((obj) => {
       if (obj instanceof THREE.Mesh || obj instanceof THREE.Line) {
         obj.geometry.dispose();
-        if (Array.isArray(obj.material)) {
-          obj.material.forEach((m) => m.dispose());
-        } else {
-          (obj.material as THREE.Material).dispose();
-        }
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        mats.forEach((m: THREE.Material) => m.dispose());
       }
       if (obj instanceof THREE.Sprite) {
-        obj.material.map?.dispose();
         obj.material.dispose();
       }
     });
+
+    // Shared texture, composer render targets, renderer
+    this.glowTexture.dispose();
+    this.composer.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }
