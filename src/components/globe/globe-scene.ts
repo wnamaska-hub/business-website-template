@@ -108,6 +108,55 @@ function createGlowTexture(size = 64): THREE.CanvasTexture {
 }
 
 // ---------------------------------------------------------------------------
+// Depth-fade materials — front hemisphere crisp, back hemisphere dimmed
+// ---------------------------------------------------------------------------
+
+const DEPTH_FADE_VERTEX = `
+  varying float vFacing;
+  void main() {
+    vec4 worldPos = modelMatrix * vec4(position, 1.0);
+    vFacing = dot(normalize(worldPos.xyz), normalize(cameraPosition));
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+function depthFadeFragment(additive: boolean): string {
+  // smoothstep maps facing from back→front into 0→1
+  return `
+    uniform vec3 uColor;
+    uniform float uFrontAlpha;
+    uniform float uBackAlpha;
+    varying float vFacing;
+    void main() {
+      float fade = smoothstep(-0.2, 0.5, vFacing);
+      float alpha = mix(uBackAlpha, uFrontAlpha, fade);
+      ${additive ? "" : "if (alpha < 0.005) discard;"}
+      gl_FragColor = vec4(uColor, alpha);
+    }
+  `;
+}
+
+function createDepthFadeMaterial(
+  color: string,
+  frontAlpha: number,
+  backAlpha: number,
+  opts: { additive?: boolean } = {},
+): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    vertexShader: DEPTH_FADE_VERTEX,
+    fragmentShader: depthFadeFragment(!!opts.additive),
+    uniforms: {
+      uColor: { value: new THREE.Color(color) },
+      uFrontAlpha: { value: frontAlpha },
+      uBackAlpha: { value: backAlpha },
+    },
+    transparent: true,
+    blending: opts.additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+    depthWrite: false,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Arc state — each beam travelling between two nodes
 // ---------------------------------------------------------------------------
 interface ArcState {
@@ -132,6 +181,7 @@ export class GlobeScene {
   private composer!: EffectComposer;
   private globeGroup = new THREE.Group();
   private arcs: ArcState[] = [];
+  private nodeSprites: THREE.Sprite[] = [];
   private frameId = 0;
   private disposed = false;
   private resizeObserver: ResizeObserver | null = null;
@@ -141,6 +191,9 @@ export class GlobeScene {
   private tier: Tier;
   private readonly reducedMotion: boolean;
   private glowTexture!: THREE.CanvasTexture;
+
+  // Reusable temp vector for per-frame calculations
+  private readonly _worldPos = new THREE.Vector3();
 
   constructor(private container: HTMLElement, overrides: Partial<GlobeConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...overrides };
@@ -207,11 +260,7 @@ export class GlobeScene {
 
   private buildGrid(): void {
     const { globeRadius, colors } = this.config;
-    const mat = new THREE.LineBasicMaterial({
-      color: new THREE.Color(colors.globe),
-      transparent: true,
-      opacity: 0.12,
-    });
+    const mat = createDepthFadeMaterial(colors.globe, 0.12, 0.02);
 
     // Sparse latitude rings (equator + ±40°)
     for (const lat of [-40, 0, 40]) {
@@ -229,11 +278,7 @@ export class GlobeScene {
 
   private buildContinents(): void {
     const { globeRadius, colors } = this.config;
-    const mat = new THREE.LineBasicMaterial({
-      color: new THREE.Color(colors.land),
-      transparent: true,
-      opacity: 0.8,
-    });
+    const mat = createDepthFadeMaterial(colors.land, 0.8, 0.06);
 
     for (const outline of CONTINENT_OUTLINES) {
       const pts = outline.map(([lon, lat]: LatLon) =>
@@ -251,8 +296,8 @@ export class GlobeScene {
       NODE_POSITIONS.length,
     );
 
-    const dotGeo = new THREE.SphereGeometry(0.016, 6, 6);
-    const dotMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(colors.node) });
+    const dotGeo = new THREE.SphereGeometry(0.013, 6, 6);
+    const dotMat = createDepthFadeMaterial(colors.node, 1.0, 0.08);
 
     for (let i = 0; i < count; i++) {
       const [lat, lon] = NODE_POSITIONS[i];
@@ -267,21 +312,21 @@ export class GlobeScene {
           map: this.glowTexture,
           color: new THREE.Color(colors.node),
           transparent: true,
-          opacity: 0.9,
+          opacity: 0.6,
           blending: THREE.AdditiveBlending,
           depthWrite: false,
         }),
       );
       sprite.position.copy(pos);
-      sprite.scale.set(0.1, 0.1, 1);
+      sprite.scale.set(0.07, 0.07, 1);
       this.globeGroup.add(sprite);
+      this.nodeSprites.push(sprite);
     }
   }
 
   private buildAtmosphere(): void {
     const { globeRadius, colors } = this.config;
     // FrontSide sphere — Fresnel is zero at centre, peaks at edges only.
-    // This prevents any filled-disc appearance.
     const geo = new THREE.SphereGeometry(globeRadius * 1.03, 48, 48);
     const mat = new THREE.ShaderMaterial({
       vertexShader: `
@@ -299,7 +344,6 @@ export class GlobeScene {
         varying vec3 vPos;
         void main() {
           float rim = 1.0 - abs(dot(normalize(-vPos), vNormal));
-          // Sharp power curve — only the outermost edge lights up
           float glow = pow(rim, 6.0) * 0.4;
           gl_FragColor = vec4(uColor, glow);
         }
@@ -321,7 +365,6 @@ export class GlobeScene {
     const ts = TIER_SETTINGS[this.tier];
     const count = Math.max(2, Math.round(this.config.maxArcs * ts.arcScale));
     for (let i = 0; i < count; i++) {
-      // Stagger initial beams so they don't all appear at once
       this.spawnArc(Math.round(Math.random() * 90));
     }
   }
@@ -338,18 +381,11 @@ export class GlobeScene {
     const start = latLonToVec3(NODE_POSITIONS[a][0], NODE_POSITIONS[a][1], globeRadius * 1.005);
     const end = latLonToVec3(NODE_POSITIONS[b][0], NODE_POSITIONS[b][1], globeRadius * 1.005);
     const points = buildArcPoints(start, end, globeRadius);
-    // ±30% random variation on beam length for organic feel
     const variation = 0.7 + Math.random() * 0.6;
     const beamLen = Math.max(4, Math.round(points.length * beamLength * variation));
 
     const geo = new THREE.BufferGeometry().setFromPoints(points);
-    const mat = new THREE.LineBasicMaterial({
-      color: new THREE.Color(colors.arc),
-      transparent: true,
-      opacity: 0.9,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
+    const mat = createDepthFadeMaterial(colors.arc, 0.9, 0.1, { additive: true });
     const line = new THREE.Line(geo, mat);
     line.geometry.setDrawRange(0, 0);
     line.visible = false;
@@ -381,10 +417,11 @@ export class GlobeScene {
   }
 
   private updateArcs(): void {
+    const camDir = this.camera.position.clone().normalize();
+
     for (let i = this.arcs.length - 1; i >= 0; i--) {
       const arc = this.arcs[i];
 
-      // Wait out spawn delay before animating
       if (arc.delay > 0) {
         arc.delay--;
         continue;
@@ -400,12 +437,18 @@ export class GlobeScene {
 
       arc.line.geometry.setDrawRange(drawStart, drawCount);
 
-      // Position head sprite at leading edge
       const headIdx = Math.min(head, arc.points.length - 1);
       arc.headSprite.position.copy(arc.points[headIdx]);
       arc.headSprite.visible = head > 0 && head < arc.points.length;
 
-      // Arc finished — clean up and replace with a random pause
+      // Fade arc head sprite based on hemisphere facing
+      if (arc.headSprite.visible) {
+        arc.headSprite.getWorldPosition(this._worldPos);
+        const facing = this._worldPos.normalize().dot(camDir);
+        const fade = THREE.MathUtils.smoothstep(facing, -0.2, 0.5);
+        (arc.headSprite.material as THREE.SpriteMaterial).opacity = 0.85 * fade;
+      }
+
       if (tail >= arc.points.length) {
         this.removeArc(i);
         this.spawnArc(30 + Math.round(Math.random() * 90));
@@ -424,6 +467,20 @@ export class GlobeScene {
   }
 
   // -----------------------------------------------------------------------
+  // Per-frame depth fade for sprites (can't use shader — always face camera)
+  // -----------------------------------------------------------------------
+
+  private updateSpriteFacing(): void {
+    const camDir = this.camera.position.clone().normalize();
+    for (const sprite of this.nodeSprites) {
+      sprite.getWorldPosition(this._worldPos);
+      const facing = this._worldPos.normalize().dot(camDir);
+      const fade = THREE.MathUtils.smoothstep(facing, -0.2, 0.5);
+      (sprite.material as THREE.SpriteMaterial).opacity = 0.6 * fade;
+    }
+  }
+
+  // -----------------------------------------------------------------------
   // Render loop
   // -----------------------------------------------------------------------
 
@@ -435,6 +492,7 @@ export class GlobeScene {
       this.globeGroup.rotation.y += this.config.rotationSpeed;
       this.updateArcs();
     }
+    this.updateSpriteFacing();
     this.composer.render();
   };
 
@@ -460,10 +518,9 @@ export class GlobeScene {
     clearTimeout(this.resizeTimer);
     this.resizeObserver?.disconnect();
 
-    // Remove all arcs explicitly (disposes their unique materials/geometries)
     while (this.arcs.length) this.removeArc(0);
+    this.nodeSprites.length = 0;
 
-    // Walk remaining scene graph
     this.scene.traverse((obj) => {
       if (obj instanceof THREE.Mesh || obj instanceof THREE.Line) {
         obj.geometry.dispose();
@@ -475,7 +532,6 @@ export class GlobeScene {
       }
     });
 
-    // Shared texture, composer render targets, renderer
     this.glowTexture.dispose();
     this.composer.dispose();
     this.renderer.dispose();
