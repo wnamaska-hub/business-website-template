@@ -327,7 +327,8 @@ export class GlobeScene {
   private buildAtmosphere(): void {
     const { globeRadius, colors } = this.config;
     // FrontSide sphere — Fresnel is zero at centre, peaks at edges only.
-    const geo = new THREE.SphereGeometry(globeRadius * 1.03, 48, 48);
+    // Radius barely exceeds the globe so the glow hugs the coastline edge.
+    const geo = new THREE.SphereGeometry(globeRadius * 1.008, 48, 48);
     const mat = new THREE.ShaderMaterial({
       vertexShader: `
         varying vec3 vNormal;
@@ -344,7 +345,7 @@ export class GlobeScene {
         varying vec3 vPos;
         void main() {
           float rim = 1.0 - abs(dot(normalize(-vPos), vNormal));
-          float glow = pow(rim, 6.0) * 0.4;
+          float glow = pow(rim, 8.0) * 0.3;
           gl_FragColor = vec4(uColor, glow);
         }
       `,
