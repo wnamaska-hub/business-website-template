@@ -30,14 +30,14 @@ export interface GlobeConfig {
 }
 
 export const DEFAULT_CONFIG: GlobeConfig = {
-  globeRadius: 1.6,
+  globeRadius: 1.4,
   rotationSpeed: 0.0008,
   nodeCount: 30,
   maxArcs: 6,
   beamLength: 0.35,
-  bloomStrength: 0.75,
-  bloomRadius: 0.4,
-  bloomThreshold: 0.08,
+  bloomStrength: 0.3,
+  bloomRadius: 0.35,
+  bloomThreshold: 0.4,
   colors: {
     globe: "#0e4d5c",
     land: "#00e5ff",
@@ -167,7 +167,7 @@ export class GlobeScene {
     // Scene & camera
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
-    this.camera.position.z = 4.2;
+    this.camera.position.z = 4.8;
 
     // Bloom
     const ts = TIER_SETTINGS[this.tier];
@@ -210,7 +210,7 @@ export class GlobeScene {
     const mat = new THREE.LineBasicMaterial({
       color: new THREE.Color(colors.globe),
       transparent: true,
-      opacity: 0.05,
+      opacity: 0.08,
     });
 
     // Sparse latitude rings (equator + ±40°)
@@ -232,7 +232,7 @@ export class GlobeScene {
     const mat = new THREE.LineBasicMaterial({
       color: new THREE.Color(colors.land),
       transparent: true,
-      opacity: 0.38,
+      opacity: 0.6,
     });
 
     for (const outline of CONTINENT_OUTLINES) {
@@ -267,20 +267,20 @@ export class GlobeScene {
           map: this.glowTexture,
           color: new THREE.Color(colors.node),
           transparent: true,
-          opacity: 0.5,
+          opacity: 0.7,
           blending: THREE.AdditiveBlending,
           depthWrite: false,
         }),
       );
       sprite.position.copy(pos);
-      sprite.scale.set(0.08, 0.08, 1);
+      sprite.scale.set(0.07, 0.07, 1);
       this.globeGroup.add(sprite);
     }
   }
 
   private buildAtmosphere(): void {
     const { globeRadius, colors } = this.config;
-    const geo = new THREE.SphereGeometry(globeRadius * 1.15, 48, 48);
+    const geo = new THREE.SphereGeometry(globeRadius * 1.08, 48, 48);
     const mat = new THREE.ShaderMaterial({
       vertexShader: `
         varying vec3 vNormal;
@@ -296,8 +296,8 @@ export class GlobeScene {
         varying vec3 vNormal;
         varying vec3 vPos;
         void main() {
-          float fresnel = pow(1.0 - dot(normalize(-vPos), vNormal), 3.5);
-          gl_FragColor = vec4(uColor, fresnel * 0.3);
+          float fresnel = pow(1.0 - dot(normalize(-vPos), vNormal), 5.0);
+          gl_FragColor = vec4(uColor, fresnel * 0.12);
         }
       `,
       uniforms: { uColor: { value: new THREE.Color(colors.atmosphere) } },
@@ -342,7 +342,7 @@ export class GlobeScene {
     const mat = new THREE.LineBasicMaterial({
       color: new THREE.Color(colors.arc),
       transparent: true,
-      opacity: 0.8,
+      opacity: 0.9,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     });

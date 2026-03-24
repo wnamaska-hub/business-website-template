@@ -2,14 +2,14 @@ import GlobeLoader from "@/components/globe/GlobeLoader";
 
 export default function HeroSection() {
   return (
-    <section className="relative min-h-screen overflow-hidden bg-[#030712] flex items-center">
+    <section className="relative min-h-screen overflow-hidden bg-[#020617] flex items-center">
       {/* Globe — absolutely positioned behind content, non-interactive */}
       <div className="absolute inset-0">
         <GlobeLoader />
       </div>
 
       {/* Gradient overlay keeps text readable over the globe */}
-      <div className="absolute inset-0 bg-gradient-to-r from-[#030712] via-[#030712]/70 to-transparent pointer-events-none" />
+      <div className="absolute inset-0 bg-gradient-to-r from-[#020617] via-[#020617]/80 to-[#020617]/20 pointer-events-none" />
 
       <div className="relative z-10 w-full max-w-7xl mx-auto px-6 lg:px-12 py-24">
         <div className="max-w-xl flex flex-col gap-6">
@@ -34,7 +34,7 @@ export default function HeroSection() {
           <div className="flex flex-col sm:flex-row gap-4 mt-2">
             <a
               href="#contact"
-              className="inline-flex h-12 items-center justify-center rounded-full bg-cyan-500 px-8 text-sm font-semibold text-[#030712] transition-colors hover:bg-cyan-400"
+              className="inline-flex h-12 items-center justify-center rounded-full bg-cyan-500 px-8 text-sm font-semibold text-[#020617] transition-colors hover:bg-cyan-400"
             >
               Get in touch
             </a>
