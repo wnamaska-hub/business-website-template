@@ -42,7 +42,7 @@ export const DEFAULT_CONFIG: GlobeConfig = {
     globe: "#0d6e7e",
     land: "#00e5ff",
     node: "#00ffff",
-    arc: "#00e5ff",
+    arc: "#a78bfa",
     atmosphere: "#00bcd4",
   },
 };
@@ -161,6 +161,7 @@ function createDepthFadeMaterial(
 // ---------------------------------------------------------------------------
 interface ArcState {
   line: THREE.Line;
+  glowLine: THREE.Line;
   headSprite: THREE.Sprite;
   points: THREE.Vector3[];
   /** Parameter that advances from 0 → points.length + beamLen */
@@ -386,28 +387,38 @@ export class GlobeScene {
     const beamLen = Math.max(4, Math.round(points.length * beamLength * variation));
 
     const geo = new THREE.BufferGeometry().setFromPoints(points);
-    const mat = createDepthFadeMaterial(colors.arc, 0.9, 0.1, { additive: true });
+
+    // Primary beam — slightly softened opacity
+    const mat = createDepthFadeMaterial(colors.arc, 0.6, 0.08, { additive: true });
     const line = new THREE.Line(geo, mat);
     line.geometry.setDrawRange(0, 0);
     line.visible = false;
     this.globeGroup.add(line);
 
+    // Glow pass — same geometry, low opacity; additive stacking creates soft halo
+    const glowMat = createDepthFadeMaterial(colors.arc, 0.18, 0.02, { additive: true });
+    const glowLine = new THREE.Line(geo, glowMat);
+    glowLine.visible = false;
+    this.globeGroup.add(glowLine);
+
+    // Head sprite — brighter energy point, slightly larger than before
     const headSprite = new THREE.Sprite(
       new THREE.SpriteMaterial({
         map: this.glowTexture,
         color: new THREE.Color(colors.arc),
         transparent: true,
-        opacity: 0.85,
+        opacity: 0.95,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       }),
     );
-    headSprite.scale.set(0.08, 0.08, 1);
+    headSprite.scale.set(0.1, 0.1, 1);
     headSprite.visible = false;
     this.globeGroup.add(headSprite);
 
     this.arcs.push({
       line,
+      glowLine,
       headSprite,
       points,
       t: 0,
@@ -429,6 +440,7 @@ export class GlobeScene {
       }
 
       arc.line.visible = true;
+      arc.glowLine.visible = true;
       arc.t += arc.speed;
 
       const head = Math.min(Math.floor(arc.t), arc.points.length);
@@ -447,7 +459,7 @@ export class GlobeScene {
         arc.headSprite.getWorldPosition(this._worldPos);
         const facing = this._worldPos.normalize().dot(camDir);
         const fade = THREE.MathUtils.smoothstep(facing, -0.2, 0.5);
-        (arc.headSprite.material as THREE.SpriteMaterial).opacity = 0.85 * fade;
+        (arc.headSprite.material as THREE.SpriteMaterial).opacity = 0.95 * fade;
       }
 
       if (tail >= arc.points.length) {
@@ -460,9 +472,11 @@ export class GlobeScene {
   private removeArc(index: number): void {
     const arc = this.arcs[index];
     this.globeGroup.remove(arc.line);
+    this.globeGroup.remove(arc.glowLine);
     this.globeGroup.remove(arc.headSprite);
     arc.line.geometry.dispose();
     (arc.line.material as THREE.Material).dispose();
+    (arc.glowLine.material as THREE.Material).dispose();
     (arc.headSprite.material as THREE.SpriteMaterial).dispose();
     this.arcs.splice(index, 1);
   }
