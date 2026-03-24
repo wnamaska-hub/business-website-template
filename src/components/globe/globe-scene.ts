@@ -317,7 +317,6 @@ export class GlobeScene {
 
     // Build scene elements
     this.scene.add(this.globeGroup);
-    this.buildGrid();
     this.buildContinents();
     this.buildNodes();
     this.buildAtmosphere();
@@ -336,24 +335,6 @@ export class GlobeScene {
   // -----------------------------------------------------------------------
   // Scene construction
   // -----------------------------------------------------------------------
-
-  private buildGrid(): void {
-    const { globeRadius, colors } = this.config;
-    const mat = createDepthFadeMaterial(colors.globe, 0.12, 0.02);
-
-    // Sparse latitude rings (equator + ±40°)
-    for (const lat of [-40, 0, 40]) {
-      const pts: THREE.Vector3[] = [];
-      for (let lon = 0; lon <= 360; lon += 4) pts.push(latLonToVec3(lat, lon, globeRadius));
-      this.globeGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
-    }
-    // Sparse meridians (every 60°)
-    for (let lon = 0; lon < 360; lon += 60) {
-      const pts: THREE.Vector3[] = [];
-      for (let lat = -90; lat <= 90; lat += 4) pts.push(latLonToVec3(lat, lon, globeRadius));
-      this.globeGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
-    }
-  }
 
   private buildContinents(): void {
     const { globeRadius, colors } = this.config;
