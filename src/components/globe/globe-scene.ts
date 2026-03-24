@@ -42,7 +42,7 @@ export const DEFAULT_CONFIG: GlobeConfig = {
     globe: "#0d6e7e",
     land: "#00e5ff",
     node: "#00ffff",
-    arc: "#a78bfa",
+    arc: "#d946ef",
     atmosphere: "#00bcd4",
   },
 };
@@ -438,7 +438,7 @@ export class GlobeScene {
 
     // Glow tube — real 3D geometry with soft radial edge fade
     const curve = new THREE.CatmullRomCurve3(points);
-    const tubeGeo = new THREE.TubeGeometry(curve, 48, 0.012, 8, false);
+    const tubeGeo = new THREE.TubeGeometry(curve, 48, 0.007, 8, false);
     const glowMat = new THREE.ShaderMaterial({
       vertexShader: GLOW_TUBE_VERTEX,
       fragmentShader: GLOW_TUBE_FRAGMENT,
