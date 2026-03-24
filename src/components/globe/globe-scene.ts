@@ -296,10 +296,11 @@ export class GlobeScene {
     this.renderer.toneMapping = THREE.NoToneMapping;
     this.container.appendChild(this.renderer.domElement);
 
-    // Scene & camera — offset globe to the right so it doesn't dominate the text area
+    // Scene & camera — close up, globe pushed right so ~1/3 is visible on screen
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
-    this.camera.position.set(-0.6, 0.2, 5.2);
+    this.camera.position.set(0, 0, 3.0);
+    this.globeGroup.position.set(2.6, 0, 0);
 
     // Bloom
     const ts = TIER_SETTINGS[this.tier];
