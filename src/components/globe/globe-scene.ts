@@ -368,7 +368,7 @@ export class GlobeScene {
       dot.position.copy(pos);
       // Orient so the dome's top points outward from the globe surface
       dot.lookAt(pos.clone().multiplyScalar(2));
-      dot.rotateX(-Math.PI / 2);
+      dot.rotateX(Math.PI / 2);
       this.globeGroup.add(dot);
 
       const sprite = new THREE.Sprite(
