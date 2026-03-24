@@ -14,21 +14,21 @@ export default function HeroSection() {
       <div className="relative z-10 w-full max-w-7xl mx-auto px-6 lg:px-12 py-24">
         <div className="max-w-xl flex flex-col gap-6">
           <p className="text-sm font-medium uppercase tracking-widest text-cyan-400">
-            Global Technology Solutions
+            IT &amp; Web Solutions
           </p>
 
           <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold leading-tight tracking-tight text-white">
-            Engineering the
+            Smarter systems,
             <br />
             <span className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-teal-300">
-              future of software
+              built for growth
             </span>
           </h1>
 
           <p className="text-lg text-zinc-400 leading-relaxed max-w-md">
-            We build reliable, scalable platforms that power businesses across
-            every continent. Let&apos;s turn your vision into production-grade
-            reality.
+            From custom web platforms to full-scale IT infrastructure, we
+            design and deliver the technology your business needs to move
+            faster and scale with confidence.
           </p>
 
           <div className="flex flex-col sm:flex-row gap-4 mt-2">

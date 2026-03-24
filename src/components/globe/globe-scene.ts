@@ -30,7 +30,7 @@ export interface GlobeConfig {
 }
 
 export const DEFAULT_CONFIG: GlobeConfig = {
-  globeRadius: 1.2,
+  globeRadius: 1.6,
   rotationSpeed: 0.0008,
   nodeCount: 30,
   maxArcs: 6,
