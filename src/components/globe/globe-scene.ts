@@ -356,15 +356,19 @@ export class GlobeScene {
       NODE_POSITIONS.length,
     );
 
-    const dotGeo = new THREE.SphereGeometry(0.013, 6, 6);
+    // Dome: top half of a sphere (phiStart=0, phiLength=π/2)
+    const dotGeo = new THREE.SphereGeometry(0.016, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2);
     const dotMat = createDepthFadeMaterial(colors.node, 1.0, 0.08);
 
     for (let i = 0; i < count; i++) {
       const [lat, lon] = NODE_POSITIONS[i];
-      const pos = latLonToVec3(lat, lon, globeRadius * 1.01);
+      const pos = latLonToVec3(lat, lon, globeRadius * 1.001);
 
       const dot = new THREE.Mesh(dotGeo, dotMat);
       dot.position.copy(pos);
+      // Orient so the dome's top points outward from the globe surface
+      dot.lookAt(pos.clone().multiplyScalar(2));
+      dot.rotateX(-Math.PI / 2);
       this.globeGroup.add(dot);
 
       const sprite = new THREE.Sprite(
