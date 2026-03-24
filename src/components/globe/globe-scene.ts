@@ -30,18 +30,18 @@ export interface GlobeConfig {
 }
 
 export const DEFAULT_CONFIG: GlobeConfig = {
-  globeRadius: 1.4,
+  globeRadius: 1.2,
   rotationSpeed: 0.0008,
   nodeCount: 30,
   maxArcs: 6,
   beamLength: 0.35,
-  bloomStrength: 0.3,
-  bloomRadius: 0.35,
-  bloomThreshold: 0.4,
+  bloomStrength: 0.25,
+  bloomRadius: 0.3,
+  bloomThreshold: 0.6,
   colors: {
-    globe: "#0e4d5c",
+    globe: "#0d6e7e",
     land: "#00e5ff",
-    node: "#00e5ff",
+    node: "#00ffff",
     arc: "#00e5ff",
     atmosphere: "#00bcd4",
   },
@@ -161,13 +161,13 @@ export class GlobeScene {
     this.renderer.setSize(width, height);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x000000, 0);
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMapping = THREE.NoToneMapping;
     this.container.appendChild(this.renderer.domElement);
 
-    // Scene & camera
+    // Scene & camera — offset globe to the right so it doesn't dominate the text area
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
-    this.camera.position.z = 4.8;
+    this.camera.position.set(-0.6, 0.2, 5.2);
 
     // Bloom
     const ts = TIER_SETTINGS[this.tier];
@@ -210,7 +210,7 @@ export class GlobeScene {
     const mat = new THREE.LineBasicMaterial({
       color: new THREE.Color(colors.globe),
       transparent: true,
-      opacity: 0.08,
+      opacity: 0.12,
     });
 
     // Sparse latitude rings (equator + ±40°)
@@ -232,7 +232,7 @@ export class GlobeScene {
     const mat = new THREE.LineBasicMaterial({
       color: new THREE.Color(colors.land),
       transparent: true,
-      opacity: 0.6,
+      opacity: 0.8,
     });
 
     for (const outline of CONTINENT_OUTLINES) {
@@ -251,7 +251,7 @@ export class GlobeScene {
       NODE_POSITIONS.length,
     );
 
-    const dotGeo = new THREE.SphereGeometry(0.012, 6, 6);
+    const dotGeo = new THREE.SphereGeometry(0.016, 6, 6);
     const dotMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(colors.node) });
 
     for (let i = 0; i < count; i++) {
@@ -267,20 +267,22 @@ export class GlobeScene {
           map: this.glowTexture,
           color: new THREE.Color(colors.node),
           transparent: true,
-          opacity: 0.7,
+          opacity: 0.9,
           blending: THREE.AdditiveBlending,
           depthWrite: false,
         }),
       );
       sprite.position.copy(pos);
-      sprite.scale.set(0.07, 0.07, 1);
+      sprite.scale.set(0.1, 0.1, 1);
       this.globeGroup.add(sprite);
     }
   }
 
   private buildAtmosphere(): void {
     const { globeRadius, colors } = this.config;
-    const geo = new THREE.SphereGeometry(globeRadius * 1.08, 48, 48);
+    // FrontSide sphere — Fresnel is zero at centre, peaks at edges only.
+    // This prevents any filled-disc appearance.
+    const geo = new THREE.SphereGeometry(globeRadius * 1.03, 48, 48);
     const mat = new THREE.ShaderMaterial({
       vertexShader: `
         varying vec3 vNormal;
@@ -296,14 +298,16 @@ export class GlobeScene {
         varying vec3 vNormal;
         varying vec3 vPos;
         void main() {
-          float fresnel = pow(1.0 - dot(normalize(-vPos), vNormal), 5.0);
-          gl_FragColor = vec4(uColor, fresnel * 0.12);
+          float rim = 1.0 - abs(dot(normalize(-vPos), vNormal));
+          // Sharp power curve — only the outermost edge lights up
+          float glow = pow(rim, 6.0) * 0.4;
+          gl_FragColor = vec4(uColor, glow);
         }
       `,
       uniforms: { uColor: { value: new THREE.Color(colors.atmosphere) } },
       transparent: true,
       blending: THREE.AdditiveBlending,
-      side: THREE.BackSide,
+      side: THREE.FrontSide,
       depthWrite: false,
     });
     this.globeGroup.add(new THREE.Mesh(geo, mat));
@@ -361,7 +365,7 @@ export class GlobeScene {
         depthWrite: false,
       }),
     );
-    headSprite.scale.set(0.055, 0.055, 1);
+    headSprite.scale.set(0.08, 0.08, 1);
     headSprite.visible = false;
     this.globeGroup.add(headSprite);
 
