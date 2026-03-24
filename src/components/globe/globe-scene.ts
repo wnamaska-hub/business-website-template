@@ -356,18 +356,15 @@ export class GlobeScene {
       NODE_POSITIONS.length,
     );
 
-    // Semi-circle: flat half-disc facing outward from the globe surface
-    const dotGeo = new THREE.CircleGeometry(0.018, 12, 0, Math.PI);
+    const dotGeo = new THREE.SphereGeometry(0.013, 6, 6);
     const dotMat = createDepthFadeMaterial(colors.node, 1.0, 0.08);
 
     for (let i = 0; i < count; i++) {
       const [lat, lon] = NODE_POSITIONS[i];
-      const pos = latLonToVec3(lat, lon, globeRadius * 1.001);
+      const pos = latLonToVec3(lat, lon, globeRadius * 1.01);
 
       const dot = new THREE.Mesh(dotGeo, dotMat);
       dot.position.copy(pos);
-      // Orient so the flat face points outward from globe centre
-      dot.lookAt(pos.clone().multiplyScalar(2));
       this.globeGroup.add(dot);
 
       const sprite = new THREE.Sprite(
@@ -380,7 +377,7 @@ export class GlobeScene {
           depthWrite: false,
         }),
       );
-      sprite.position.copy(latLonToVec3(lat, lon, globeRadius * 1.005));
+      sprite.position.copy(pos);
       sprite.scale.set(0.07, 0.07, 1);
       this.globeGroup.add(sprite);
       this.nodeSprites.push(sprite);
