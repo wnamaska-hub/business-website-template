@@ -189,10 +189,47 @@ const GLOW_TUBE_FRAGMENT = `
     if (vPathT < uTail || vPathT > uHead) discard;
     float hemiFade = smoothstep(-0.2, 0.5, vFacing);
     float alpha = mix(uBackAlpha, uFrontAlpha, hemiFade);
+    // Tail-to-head gradient — bright at head, fades toward tail
+    float beamFade = smoothstep(uTail, uHead, vPathT);
+    alpha *= beamFade;
     // Soft radial falloff — tube centre opaque, edges fade out for glow look
     float edgeFade = abs(dot(normalize(vViewDir), normalize(vWorldNormal)));
     alpha *= pow(edgeFade, 0.5);
     if (alpha < 0.003) discard;
+    gl_FragColor = vec4(uColor, alpha);
+  }
+`;
+
+// ---------------------------------------------------------------------------
+// Core beam shaders — thin line with hemisphere fade + tail-to-head gradient
+// ---------------------------------------------------------------------------
+
+const CORE_BEAM_VERTEX = `
+  attribute float aPathT;
+  varying float vFacing;
+  varying float vPathT;
+  void main() {
+    vPathT = aPathT;
+    vec4 worldPos = modelMatrix * vec4(position, 1.0);
+    vFacing = dot(normalize(worldPos.xyz), normalize(cameraPosition));
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const CORE_BEAM_FRAGMENT = `
+  uniform vec3 uColor;
+  uniform float uFrontAlpha;
+  uniform float uBackAlpha;
+  uniform float uHead;
+  uniform float uTail;
+  varying float vFacing;
+  varying float vPathT;
+  void main() {
+    float hemiFade = smoothstep(-0.2, 0.5, vFacing);
+    float alpha = mix(uBackAlpha, uFrontAlpha, hemiFade);
+    // Tail-to-head gradient — bright at head, fades toward tail
+    float beamFade = smoothstep(uTail, uHead, vPathT);
+    alpha *= beamFade;
     gl_FragColor = vec4(uColor, alpha);
   }
 `;
@@ -429,8 +466,26 @@ export class GlobeScene {
 
     const geo = new THREE.BufferGeometry().setFromPoints(points);
 
-    // Core beam — crisp thin line
-    const mat = createDepthFadeMaterial(colors.arc, 0.7, 0.08, { additive: true });
+    // Add per-vertex path parameter (0→1) for tail-fade in the shader
+    const pathTs = new Float32Array(points.length);
+    for (let j = 0; j < points.length; j++) pathTs[j] = j / (points.length - 1);
+    geo.setAttribute("aPathT", new THREE.BufferAttribute(pathTs, 1));
+
+    // Core beam — crisp thin line with tail-to-head gradient
+    const mat = new THREE.ShaderMaterial({
+      vertexShader: CORE_BEAM_VERTEX,
+      fragmentShader: CORE_BEAM_FRAGMENT,
+      uniforms: {
+        uColor: { value: new THREE.Color(colors.arc) },
+        uFrontAlpha: { value: 0.7 },
+        uBackAlpha: { value: 0.08 },
+        uHead: { value: 0 },
+        uTail: { value: 0 },
+      },
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
     const line = new THREE.Line(geo, mat);
     line.geometry.setDrawRange(0, 0);
     line.visible = false;
@@ -505,13 +560,18 @@ export class GlobeScene {
       const drawStart = Math.min(tail, arc.points.length);
       const drawCount = Math.max(0, head - drawStart);
 
-      // Core line — setDrawRange
+      // Core line — setDrawRange + tail-fade uniforms
       arc.line.geometry.setDrawRange(drawStart, drawCount);
+      const nHead = head / arc.points.length;
+      const nTail = tail / arc.points.length;
+      const coreUniforms = (arc.line.material as THREE.ShaderMaterial).uniforms;
+      coreUniforms.uHead.value = nHead;
+      coreUniforms.uTail.value = nTail;
 
       // Glow tube — update path-range uniforms (normalized 0→1)
       const uniforms = (arc.glowMesh.material as THREE.ShaderMaterial).uniforms;
-      uniforms.uHead.value = head / arc.points.length;
-      uniforms.uTail.value = tail / arc.points.length;
+      uniforms.uHead.value = nHead;
+      uniforms.uTail.value = nTail;
 
       const headIdx = Math.min(head, arc.points.length - 1);
       arc.headSprite.position.copy(arc.points[headIdx]);
