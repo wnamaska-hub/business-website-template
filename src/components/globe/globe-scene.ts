@@ -248,6 +248,13 @@ interface ArcState {
   speed: number;
   /** Frames to wait before the beam starts traveling (organic stagger) */
   delay: number;
+  /** Node indices for departure/arrival dome flash */
+  fromNode: number;
+  toNode: number;
+  /** Whether departure flash has been triggered */
+  departFlashed: boolean;
+  /** Whether arrival flash has been triggered */
+  arriveFlashed: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +268,9 @@ export class GlobeScene {
   private globeGroup = new THREE.Group();
   private arcs: ArcState[] = [];
   private nodeSprites: THREE.Sprite[] = [];
+  private nodeDomes: THREE.Mesh[] = [];
+  /** Per-node flash timer: counts down from 1→0 to animate color back */
+  private nodeFlash: number[] = [];
   private frameId = 0;
   private disposed = false;
   private resizeObserver: ResizeObserver | null = null;
@@ -358,18 +368,21 @@ export class GlobeScene {
 
     // Dome: top half of a sphere (phiStart=0, phiLength=π/2)
     const dotGeo = new THREE.SphereGeometry(0.016, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2);
-    const dotMat = createDepthFadeMaterial(colors.node, 1.0, 0.08);
 
     for (let i = 0; i < count; i++) {
       const [lat, lon] = NODE_POSITIONS[i];
       const pos = latLonToVec3(lat, lon, globeRadius * 1.001);
 
+      // Each dome gets its own material so colour can change independently
+      const dotMat = createDepthFadeMaterial(colors.node, 1.0, 0.08);
       const dot = new THREE.Mesh(dotGeo, dotMat);
       dot.position.copy(pos);
       // Orient so the dome's top points outward from the globe surface
       dot.lookAt(pos.clone().multiplyScalar(2));
       dot.rotateX(Math.PI / 2);
       this.globeGroup.add(dot);
+      this.nodeDomes.push(dot);
+      this.nodeFlash.push(0);
 
       const sprite = new THREE.Sprite(
         new THREE.SpriteMaterial({
@@ -522,6 +535,10 @@ export class GlobeScene {
       beamLen,
       speed: 0.3 + Math.random() * 0.6,
       delay,
+      fromNode: a,
+      toNode: b,
+      departFlashed: false,
+      arriveFlashed: false,
     });
   }
 
@@ -539,6 +556,12 @@ export class GlobeScene {
       arc.line.visible = true;
       arc.glowMesh.visible = true;
       arc.t += arc.speed;
+
+      // Flash departure dome when beam first starts moving
+      if (!arc.departFlashed) {
+        arc.departFlashed = true;
+        this.flashNode(arc.fromNode);
+      }
 
       const head = Math.min(Math.floor(arc.t), arc.points.length);
       const tail = Math.max(0, Math.floor(arc.t) - arc.beamLen);
@@ -570,6 +593,12 @@ export class GlobeScene {
         (arc.headSprite.material as THREE.SpriteMaterial).opacity = 0.95 * fade;
       }
 
+      // Flash arrival dome when beam reaches the end
+      if (!arc.arriveFlashed && head >= arc.points.length) {
+        arc.arriveFlashed = true;
+        this.flashNode(arc.toNode);
+      }
+
       if (tail >= arc.points.length) {
         this.removeArc(i);
         this.spawnArc(30 + Math.round(Math.random() * 90));
@@ -588,6 +617,28 @@ export class GlobeScene {
     (arc.glowMesh.material as THREE.Material).dispose();
     (arc.headSprite.material as THREE.SpriteMaterial).dispose();
     this.arcs.splice(index, 1);
+  }
+
+  // -----------------------------------------------------------------------
+  // Node dome flash — pink on pulse depart/arrive, fades back to cyan
+  // -----------------------------------------------------------------------
+
+  private flashNode(index: number): void {
+    if (index < this.nodeDomes.length) {
+      this.nodeFlash[index] = 1.0;
+    }
+  }
+
+  private updateNodeFlashes(): void {
+    const arcColor = new THREE.Color(this.config.colors.arc);
+    const nodeColor = new THREE.Color(this.config.colors.node);
+    for (let i = 0; i < this.nodeFlash.length; i++) {
+      if (this.nodeFlash[i] <= 0) continue;
+      this.nodeFlash[i] = Math.max(0, this.nodeFlash[i] - 0.012);
+      const t = this.nodeFlash[i];
+      const blended = nodeColor.clone().lerp(arcColor, t);
+      (this.nodeDomes[i].material as THREE.ShaderMaterial).uniforms.uColor.value.copy(blended);
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -616,6 +667,7 @@ export class GlobeScene {
       this.globeGroup.rotation.y += this.config.rotationSpeed;
       this.updateArcs();
     }
+    this.updateNodeFlashes();
     this.updateSpriteFacing();
     this.composer.render();
   };
@@ -644,6 +696,8 @@ export class GlobeScene {
 
     while (this.arcs.length) this.removeArc(0);
     this.nodeSprites.length = 0;
+    this.nodeDomes.length = 0;
+    this.nodeFlash.length = 0;
 
     this.scene.traverse((obj) => {
       if (obj instanceof THREE.Mesh || obj instanceof THREE.Line) {
