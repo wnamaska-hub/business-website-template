@@ -33,11 +33,11 @@ export const DEFAULT_CONFIG: GlobeConfig = {
   globeRadius: 1.6,
   rotationSpeed: 0.0008,
   nodeCount: 30,
-  maxArcs: 8,
+  maxArcs: 6,
   beamLength: 0.35,
-  bloomStrength: 0.9,
+  bloomStrength: 0.75,
   bloomRadius: 0.4,
-  bloomThreshold: 0.05,
+  bloomThreshold: 0.08,
   colors: {
     globe: "#0e4d5c",
     land: "#00e5ff",
@@ -113,13 +113,13 @@ function createGlowTexture(size = 64): THREE.CanvasTexture {
 interface ArcState {
   line: THREE.Line;
   headSprite: THREE.Sprite;
-  /** Pre-computed world positions along the curve */
   points: THREE.Vector3[];
   /** Parameter that advances from 0 → points.length + beamLen */
   t: number;
-  /** How many points the visible beam window spans */
   beamLen: number;
   speed: number;
+  /** Frames to wait before the beam starts traveling (organic stagger) */
+  delay: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +210,7 @@ export class GlobeScene {
     const mat = new THREE.LineBasicMaterial({
       color: new THREE.Color(colors.globe),
       transparent: true,
-      opacity: 0.06,
+      opacity: 0.05,
     });
 
     // Sparse latitude rings (equator + ±40°)
@@ -232,7 +232,7 @@ export class GlobeScene {
     const mat = new THREE.LineBasicMaterial({
       color: new THREE.Color(colors.land),
       transparent: true,
-      opacity: 0.5,
+      opacity: 0.38,
     });
 
     for (const outline of CONTINENT_OUTLINES) {
@@ -316,11 +316,13 @@ export class GlobeScene {
   private seedArcs(): void {
     const ts = TIER_SETTINGS[this.tier];
     const count = Math.max(2, Math.round(this.config.maxArcs * ts.arcScale));
-    for (let i = 0; i < count; i++) this.spawnArc(Math.random()); // stagger initial beams
+    for (let i = 0; i < count; i++) {
+      // Stagger initial beams so they don't all appear at once
+      this.spawnArc(Math.round(Math.random() * 90));
+    }
   }
 
-  /** Spawn an arc with an optional initial progress offset for staggering. */
-  private spawnArc(initialProgress = 0): void {
+  private spawnArc(delay = 0): void {
     const { globeRadius, colors, nodeCount, beamLength } = this.config;
     const ts = TIER_SETTINGS[this.tier];
     const nodeLimit = Math.min(Math.round(nodeCount * ts.nodeScale), NODE_POSITIONS.length);
@@ -332,49 +334,59 @@ export class GlobeScene {
     const start = latLonToVec3(NODE_POSITIONS[a][0], NODE_POSITIONS[a][1], globeRadius * 1.005);
     const end = latLonToVec3(NODE_POSITIONS[b][0], NODE_POSITIONS[b][1], globeRadius * 1.005);
     const points = buildArcPoints(start, end, globeRadius);
-    const beamLen = Math.max(4, Math.round(points.length * beamLength));
+    // ±30% random variation on beam length for organic feel
+    const variation = 0.7 + Math.random() * 0.6;
+    const beamLen = Math.max(4, Math.round(points.length * beamLength * variation));
 
-    // Line
     const geo = new THREE.BufferGeometry().setFromPoints(points);
     const mat = new THREE.LineBasicMaterial({
       color: new THREE.Color(colors.arc),
       transparent: true,
-      opacity: 0.85,
+      opacity: 0.8,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     });
     const line = new THREE.Line(geo, mat);
     line.geometry.setDrawRange(0, 0);
+    line.visible = false;
     this.globeGroup.add(line);
 
-    // Bright sprite at beam head
     const headSprite = new THREE.Sprite(
       new THREE.SpriteMaterial({
         map: this.glowTexture,
         color: new THREE.Color(colors.arc),
         transparent: true,
-        opacity: 0.9,
+        opacity: 0.85,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       }),
     );
-    headSprite.scale.set(0.06, 0.06, 1);
+    headSprite.scale.set(0.055, 0.055, 1);
+    headSprite.visible = false;
     this.globeGroup.add(headSprite);
 
-    const totalTravel = points.length + beamLen;
     this.arcs.push({
       line,
       headSprite,
       points,
-      t: Math.round(initialProgress * totalTravel),
+      t: 0,
       beamLen,
-      speed: 0.4 + Math.random() * 0.5,
+      speed: 0.3 + Math.random() * 0.6,
+      delay,
     });
   }
 
   private updateArcs(): void {
     for (let i = this.arcs.length - 1; i >= 0; i--) {
       const arc = this.arcs[i];
+
+      // Wait out spawn delay before animating
+      if (arc.delay > 0) {
+        arc.delay--;
+        continue;
+      }
+
+      arc.line.visible = true;
       arc.t += arc.speed;
 
       const head = Math.min(Math.floor(arc.t), arc.points.length);
@@ -387,12 +399,12 @@ export class GlobeScene {
       // Position head sprite at leading edge
       const headIdx = Math.min(head, arc.points.length - 1);
       arc.headSprite.position.copy(arc.points[headIdx]);
-      arc.headSprite.visible = head < arc.points.length;
+      arc.headSprite.visible = head > 0 && head < arc.points.length;
 
-      // Arc finished — clean up and replace
+      // Arc finished — clean up and replace with a random pause
       if (tail >= arc.points.length) {
         this.removeArc(i);
-        this.spawnArc();
+        this.spawnArc(30 + Math.round(Math.random() * 90));
       }
     }
   }
